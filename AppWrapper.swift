@@ -8,7 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
     var timer: Timer?
     var lastTranscriptLineCount = 0
     
-    let workspaceDir = "/Users/shauryashah/AG/ultra-code"
+    let workspaceDir = "/Users/USER/AG/ultra-code"
     
     var ipcRequestPath: String { return workspaceDir + "/.ipc_request.txt" }
     var ipcResponsePath: String { return workspaceDir + "/.ipc_response.txt" }

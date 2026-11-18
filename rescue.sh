@@ -1,6 +1,6 @@
 #!/bin/bash
-REQ="/Users/shauryashah/AG/ultra-code/.ipc_request.txt"
-RES="/Users/shauryashah/AG/ultra-code/.ipc_response.txt"
+REQ="/Users/USER/AG/ultra-code/.ipc_request.txt"
+RES="/Users/USER/AG/ultra-code/.ipc_response.txt"
 while true; do
   if [ -f "$REQ" ]; then
     CMD=$(cat "$REQ")

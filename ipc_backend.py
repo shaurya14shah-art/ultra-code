@@ -3,9 +3,9 @@ import time
 import sys
 import subprocess
 
-REQ_PATH = "/Users/shauryashah/AG/ultra-code/.ipc_request.txt"
-RES_PATH = "/Users/shauryashah/AG/ultra-code/.ipc_response.txt"
-STREAM_PATH = "/Users/shauryashah/AG/ultra-code/.ipc_stream.txt"
+REQ_PATH = "/Users/USER/AG/ultra-code/.ipc_request.txt"
+RES_PATH = "/Users/USER/AG/ultra-code/.ipc_response.txt"
+STREAM_PATH = "/Users/USER/AG/ultra-code/.ipc_stream.txt"
 
 def stream_msg(msg):
     with open(STREAM_PATH, "a") as f:

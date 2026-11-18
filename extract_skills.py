@@ -12,7 +12,7 @@ files = {
     "references/agent-roles.md": (45225, len(content))
 }
 
-base_dir = "/Users/shauryashah/.gemini/config/skills/ultracode"
+base_dir = "/Users/USER/.gemini/config/skills/ultracode"
 
 for file_path, (start, end) in files.items():
     full_path = os.path.join(base_dir, file_path)

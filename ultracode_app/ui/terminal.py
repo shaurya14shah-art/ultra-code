@@ -250,11 +250,11 @@ class UltraCodeApp(App):
         async def _run():
             full_response = ""
             try:
-                req_path = "/Users/shauryashah/AG/ultra-code/.ipc_request.txt"
-                res_path = "/Users/shauryashah/AG/ultra-code/.ipc_response.txt"
-                stream_path = "/Users/shauryashah/AG/ultra-code/.ipc_stream.txt"
+                req_path = "/Users/USER/AG/ultra-code/.ipc_request.txt"
+                res_path = "/Users/USER/AG/ultra-code/.ipc_response.txt"
+                stream_path = "/Users/USER/AG/ultra-code/.ipc_stream.txt"
                 
-                brain_dir = "/Users/shauryashah/.gemini/antigravity-ide/brain/"
+                brain_dir = "/Users/USER/.gemini/antigravity-ide/brain/"
                 try:
                     latest_dir = max(glob.glob(os.path.join(brain_dir, '*-*-*-*-*')), key=os.path.getmtime)
                     transcript_path = os.path.join(latest_dir, ".system_generated/logs/transcript.jsonl")

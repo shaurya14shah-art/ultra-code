@@ -13,7 +13,7 @@ COLOR_TO_EMOJI = {
 }
 
 def generate():
-    agents_dir = "/Users/shauryashah/.gemini/antigravity-ide/brain/40298de1-2b41-4efb-b0a0-16c392e01494/scratch/claude-god-mode/agents"
+    agents_dir = "/Users/USER/.gemini/antigravity-ide/brain/40298de1-2b41-4efb-b0a0-16c392e01494/scratch/claude-god-mode/agents"
     md_files = glob.glob(os.path.join(agents_dir, "*.md"))
     
     python_code = [
@@ -74,7 +74,7 @@ GOD_MODE_AGENTS["{name}"] = {var_name}
 """
                 python_code.append(agent_code)
                 
-    with open("/Users/shauryashah/AG/ultra-code/ultracode_app/agents/god_mode_personas.py", "w") as f:
+    with open("/Users/USER/AG/ultra-code/ultracode_app/agents/god_mode_personas.py", "w") as f:
         f.write("\n".join(python_code))
         
     print(f"Generated {len(md_files)} God Mode agents.")

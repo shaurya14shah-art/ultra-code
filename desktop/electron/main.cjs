@@ -5,7 +5,7 @@ const fs = require('fs');
 let mainWindow;
 
 const IS_DEV = process.env.NODE_ENV === 'development';
-const WORKSPACE_DIR = '/Users/shauryashah/AG/ultra-code';
+const WORKSPACE_DIR = '/Users/USER/AG/ultra-code';
 const IPC_REQUEST_PATH = path.join(WORKSPACE_DIR, '.ipc_request.txt');
 const IPC_RESPONSE_PATH = path.join(WORKSPACE_DIR, '.ipc_response.txt');
 const IPC_STREAM_PATH = path.join(WORKSPACE_DIR, '.ipc_stream.txt');
