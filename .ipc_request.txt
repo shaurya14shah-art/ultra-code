@@ -1,0 +1,1 @@
+[HYPER MODE] Deploy the 12-agent hyper-swarm to execute: make a football game

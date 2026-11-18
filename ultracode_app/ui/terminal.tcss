@@ -1,0 +1,115 @@
+Screen {
+    background: #05050A;
+    color: #00FFCC;
+}
+
+/* --- HEADER --- */
+#header-panel {
+    dock: top;
+    height: 7;
+    background: #05050A;
+    color: #FF0055;
+    border-bottom: heavy #00FFCC;
+    text-align: center;
+    content-align: center middle;
+    text-style: bold;
+}
+
+/* --- SIDEBAR --- */
+#sidebar {
+    dock: left;
+    width: 35;
+    border-right: heavy #FF0055;
+    background: #0A0A10;
+    padding: 1;
+}
+
+#sidebar-title {
+    color: #00FFCC;
+    text-style: bold italic;
+    border-bottom: dashed #00FFCC;
+    margin-bottom: 1;
+    text-align: center;
+    padding-bottom: 1;
+}
+
+.agent-list-item {
+    padding: 0 1;
+    margin-bottom: 1;
+}
+
+.agent-idle {
+    color: #444455;
+}
+
+.agent-active {
+    color: #39FF14;
+    text-style: bold italic;
+    background: #112211;
+    border-left: thick #39FF14;
+    padding-left: 1;
+}
+
+/* --- MAIN CHAT AREA --- */
+#chat-container {
+    width: 1fr;
+    height: 1fr;
+    padding: 1 2;
+    background: #030305;
+}
+
+.user-message {
+    color: #FF0055;
+    background: #1A0510;
+    padding: 1 2;
+    margin: 1 0;
+    border-left: heavy #FF0055;
+    text-style: bold;
+}
+
+.agent-message {
+    color: #00FFCC;
+    background: #051A1A;
+    padding: 1 2;
+    margin: 1 0 1 2;
+    border-left: heavy #00FFCC;
+}
+
+.system-message {
+    color: #39FF14;
+    background: #051A05;
+    padding: 1 2;
+    margin: 1 0;
+    border: dashed #39FF14;
+    text-style: italic;
+}
+
+.tool-message {
+    color: #FFB300;
+    margin: 0 0 0 4;
+    text-style: italic dim;
+}
+
+/* --- BOTTOM CONTROLS --- */
+#status-bar {
+    dock: bottom;
+    height: 1;
+    background: #FF0055;
+    color: #FFFFFF;
+    text-style: bold;
+    padding: 0 1;
+}
+
+#input-box {
+    dock: bottom;
+    height: 3;
+    border: none;
+    border-top: heavy #00FFCC;
+    background: #05050A;
+    color: #FFFFFF;
+}
+
+#input-box:focus {
+    border-top: heavy #39FF14;
+    background: #0A0A10;
+}

@@ -1,0 +1,1 @@
+The architecture relies on 100+ dynamic swarm agents.

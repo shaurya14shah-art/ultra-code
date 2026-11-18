@@ -1,0 +1,971 @@
+<USER_REQUEST>
+Here is the skills that I want you to implement
+---
+name: ultracode
+description: Use this skill whenever the user says ultracode, asks for maximum-effort or maximum-efficiency coding work, wants a task divided across coordinated agents, or is working on high-stakes code where correctness matters more than speed — research code, a competition entry, a production release, anything shipped only once. Also trigger on phrases like divide this into agents, make this bulletproof, or summon a pet by name (owl, ants, hawk, hound, octopus), and on any request large enough that one linear pass would likely miss edge cases. Provides the full pipeline — decompose into a dependency graph with frozen interfaces, assign agent roles (architect, implementers, adversarial reviewer, tester, integrator) each with its own pet and terminal HUD, dispatch them in real parallel or fall back to sequential simulation, then run mandatory verification gates before calling anything done. Don't just write the code directly for large or critical requests — run this pipeline first.
+---
+
+# Ultracode
+
+Ultracode is maximum-effort mode for coding work: instead of writing a task start to finish in
+one linear pass, break it into a dependency graph, hand each independent piece to a specialized
+agent role, run the parallel-safe pieces concurrently, and pass everything through adversarial
+review and independent testing before it ships. Use it when the task is large enough to actually
+decompose and the cost of being wrong is high enough to justify the overhead — not as the default
+way to write every function.
+
+**Why this works, briefly:** a single agent that writes code, reviews its own code, and tests its
+own code shares one set of blind spots across all three jobs — whatever it didn't think of while
+writing, it won't think of while reviewing either. Splitting those jobs across separate passes (or
+separate agents, when the runtime actually supports parallel dispatch) forces a fresh, narrower
+context onto each one — the same reason isolated subagent context windows exist in the first
+place: a reviewer that never saw the reasoning behind a design decision reviews the *code*, not
+the intent behind it, and catches things self-review skips.
+
+**Why it isn't free:** decomposition and cross-checking cost real time and tokens — coordinating
+several focused passes typically costs several times what one direct pass would, in exchange for
+higher reliability. That trade is worth making when the output is genuinely high-stakes. It is not
+worth making for a quick script or a one-line fix — for those, just write the code.
+
+## Should this task get the full pipeline?
+
+Run the phases below when **both** are true:
+
+- The task actually decomposes — there are two or more pieces with a real interface between them,
+  not one continuous piece of reasoning being split up for the sake of it.
+- The stakes justify the overhead — research code, a competition or publication submission, a
+  production release, or anything else you only get to ship once and want to get right.
+
+If the user explicitly asked for ultracode or max effort, run the pipeline even for a task you'd
+otherwise judge too small — that's an explicit request for thoroughness over speed. Otherwise, for
+one function or one clear fix, skip straight to writing it. Forcing a decomposition onto a task
+with no real seam just adds coordination overhead with nothing to show for it.
+
+## Phase 0 — Lock the target
+
+Before splitting anything, write down, explicitly:
+
+- **Definition of done** — what "correct" means for this specific task, in terms someone could
+  check against later without asking what you meant.
+- **Constraints** — language/framework already in use, libraries that are and aren't allowed,
+  performance or compatibility requirements.
+- **Out of scope** — what you're deliberately not doing, so no agent invents extra work.
+
+If the user hasn't specified some of this, state your best interpretation and proceed rather than
+stalling on it — but write the interpretation down. It becomes the contract every role below is
+checked against in Phase 4, and an unstated assumption here is the single biggest reason
+multi-agent output ends up inconsistent: agents that don't share a context can't infer a spec you
+never wrote down, they can only guess at it, and they won't all guess the same way.
+
+## Phase 1 — Decompose into a dependency graph
+
+Break the task into subtasks. For each one, pin down:
+
+- **What it owns** — the specific files, modules, or functions it's responsible for.
+- **Its interface** — the exact inputs/outputs it exposes to every other subtask: function
+  signatures, types, data schemas, whatever the boundary actually is. Decide this now, before any
+  implementation starts.
+- **Its dependencies** — which other subtasks, if any, must land first.
+
+Freezing the interface before implementation is the part that actually matters. A subagent's
+context starts empty — the only thing that crosses into it is whatever you explicitly hand it in
+its task prompt, nothing implicit, nothing assumed shared. If two pieces of work each guess at the
+shape of the boundary between them instead of being handed a frozen one, they'll guess
+differently, and "integration" turns into a rewrite instead of a merge. This is the most common
+way this whole approach fails — spend real time here.
+
+Once every subtask has an owner, an interface, and its dependencies listed, group them into waves:
+
+```
+Wave 1: [subtasks with no dependencies — these can run in parallel]
+Wave 2: [subtasks that only depend on Wave 1 — parallel once Wave 1 lands]
+...
+```
+
+See `references/decomposition-patterns.md` for common shapes this takes (layered systems,
+independent parallel modules, pipelines, model+validation splits) and the failure modes to watch
+for — worth a read before decomposing anything non-trivial.
+
+## Phase 2 — Assign agent roles
+
+A default role set that covers most tasks. Use all of them, drop what doesn't apply, or add more:
+
+- **Architect** — runs first, alone. Owns the interfaces and overall design from Phase 1. Its
+  output (the frozen contracts) is handed verbatim to every other role.
+- **Implementer** (one per parallel-safe subtask) — gets *only* its own subtask spec plus the
+  frozen interfaces it touches, not the whole codebase. A narrower context keeps it focused and
+  mirrors why isolated subagents outperform one agent holding everything at once.
+- **Reviewer** — adversarial review of every implementer's output against the Phase 0 spec.
+  Actively hunting for what's wrong, not confirming it's fine. Must not be the same pass that
+  wrote the code — self-review inherits the author's blind spots by construction.
+- **Tester** — writes and runs tests derived from the spec and the interface, not from reading the
+  implementation. A test written by reading the code just re-derives the code's own bugs as
+  expected behavior; it has to check the requirement, not the artifact.
+- **Integrator** — merges everything in dependency order, resolves any interface drift between
+  pieces, runs the whole thing end to end.
+
+Give each role a tight, self-contained prompt: what it owns, exactly what it's handed (paste in
+the actual interfaces/spec — don't reference "the plan" and assume it's visible), and what "done"
+looks like for that role specifically. Full prompt templates and a complete worked example are in
+`references/agent-roles.md`.
+
+## Phase 3 — Execute
+
+**(a) Real parallel dispatch.** If the runtime can actually spawn concurrent agents (a
+subagent/task-style tool, or direct API access), launch every subtask in a wave together, not
+staggered one after another — the wall-clock win only exists if they're actually running at the
+same time. `scripts/orchestrator.py` is a runnable reference implementation: it dispatches a list
+of role prompts to the Claude API concurrently using your own API key and collects the results
+keyed by role. `scripts/pets.py` is a friendlier front end to the same dispatch — see "Pets" below.
+Adapt either into however the target system actually spawns agents — the important part is the
+shape (self-contained prompt in, labeled result out), not the exact script.
+
+**(b) Sequential simulation.** If there's no real concurrent execution available, work through the
+roles one at a time in the same session, explicitly switching persona for each ("switching to
+reviewer — did not write this code, looking for what's wrong with it"). This is strictly weaker
+than real isolation, since the same context already knows what it wrote going in and self-review
+is generously biased toward assuming its own reasoning was right — but it still catches more than
+skipping the step entirely. Treat it as a floor for when (a) isn't available, not a substitute for
+(a) when it is.
+
+## Phase 4 — Integrate and gate
+
+Merge in dependency order. Before calling anything done, check it against the Phase 0 definition
+explicitly — not "does this look plausible" but "does it satisfy every constraint that was written
+down." For anything that earned the full pipeline in the first place, this checklist is not
+optional:
+
+- [ ] Every interface from Phase 1 is actually satisfied on both sides of the boundary
+- [ ] Tests pass, and were written from the spec (Phase 2's Tester), not from the implementation
+- [ ] Edge cases and error paths are covered, not just the happy path
+- [ ] Anything touching input handling, auth, or external calls got a security-focused pass
+- [ ] The result matches Phase 0's definition of done, not a reinterpretation that crept in
+
+If something fails a gate, send it back to the role that owns it with the specific failure — don't
+quietly patch it in the integration step. A patch made outside the role structure defeats the
+reason specialized review existed in the first place, and it's exactly the kind of fix that looks
+small in the moment and turns out to violate an interface another piece depends on.
+
+## Pets
+
+Each role above has a pet — a call sign to summon it by instead of writing out a full role prompt
+every time:
+
+| Pet | Call sign | Role |
+|---|---|---|
+| 🦉 | `owl` | architect |
+| 🐜 | `ants` | implementer |
+| 🦅 | `hawk` | reviewer |
+| 🐕 | `hound` | tester |
+| 🐙 | `octopus` | integrator |
+
+`python scripts/pets.py <call-sign> "<task>" ["<task>" ...]` summons that pet — one task per squad
+member, 1 to 100 at once (see "Squads and the 100 cap" in `references/pets.md`). While the dispatch
+is in flight it draws a live terminal panel: the pet, a spinner, and two bars — task progress (how
+many of this summon's dispatches have come back) and squad size (how many of this pet's 100-cap
+are deployed right now). Both bars are real, read off actual completed dispatches, not a simulated
+timer — consistent with the rest of ultracode, nothing here is faked for show. Run
+`python scripts/pets.py roster` to see every pet without spending an API call.
+
+This sits on top of Phase 3(a), not apart from it — one pet summon is exactly one `AgentSpec` per
+squad member, dispatched through the same `run_one()` that `orchestrator.py` already uses. See
+`references/pets.md` for the full command reference and squad-sizing guidance.
+
+## Reference files
+
+- `references/agent-roles.md` — full prompt templates for each role, plus a complete worked
+  example (a small simulation task decomposed end to end).
+- `references/decomposition-patterns.md` — common decomposition shapes by task type, and the
+  specific failure modes that show up when this approach goes wrong.
+- `references/pets.md` — full pet roster, command reference, and squad-sizing guidance for the
+  100 cap.
+- `scripts/orchestrator.py` — runnable parallel-dispatch reference implementation. Needs
+  `pip install anthropic` and your own `ANTHROPIC_API_KEY`; run `python orchestrator.py --demo`
+  to sanity-check the harness before wiring it into anything real.
+- `scripts/pets.py` — the pet HUD front end to `orchestrator.py`. Needs `pip install rich` in
+  addition to `anthropic`. Run `python pets.py roster` to preview it with no API key needed.
+
+## Output format
+
+For a full ultracode run, give the user:
+
+- The Phase 0 definition of done, stated plainly, so a misread spec is caught immediately
+- The wave plan from Phase 1 — what ran in parallel, what was sequential, and why
+- The actual code/deliverable
+- The Phase 4 gate checklist, filled in — not just "tests pass" but which tests, against what
+- Anything that failed a gate and got sent back, and what changed as a result
+
+Keep this proportional: a task that triggered the full pipeline deserves the full trail above; if
+the task wasn't worth decomposing (see "Should this task get the full pipeline?"), say so briefly
+and hand back the direct result.
+#!/usr/bin/env python3
+"""
+Ultracode pets — a terminal HUD for calling ultracode agents by name.
+
+Each ultracode role (Phase 2 of SKILL.md) has a pet with a call sign. Summon one to
+dispatch that role for real, or summon a squad of it — up to 100 at once — for a wave
+of parallel-safe subtasks (see "Squads and the 100 cap" in references/pets.md). Built
+directly on orchestrator.py's AgentSpec / run_one, so every dispatch here is a real API
+call animated live while it's in flight, not a simulated progress bar.
+
+Requires:
+    pip install anthropic rich --break-system-packages
+    ANTHROPIC_API_KEY set in your environment
+
+Usage:
+    python pets.py roster
+    python pets.py owl "design the interfaces for a rate limiter"
+    python pets.py ants "implement the token bucket" "implement the refill timer"
+    python pets.py hound "write tests for the rate limiter from its spec"
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import time
+import argparse
+import concurrent.futures
+from dataclasses import dataclass
+
+try:
+    from rich.console import Console, Group
+    from rich.live import Live
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.progress_bar import ProgressBar
+    from rich.text import Text
+    from rich.spinner import Spinner
+except ImportError:
+    print("Missing dependency. Run: pip install rich --break-system-packages")
+    sys.exit(1)
+
+try:
+    from orchestrator import AgentSpec, run_one, Anthropic, DEFAULT_MODEL
+except ImportError:
+    print("pets.py must sit next to orchestrator.py in the same scripts/ folder.")
+    sys.exit(1)
+
+# Hard cap on how many of one pet you can summon at once. This is a safety/cost bound,
+# not a target — a real task might deploy 3, or 15, or (rarely) close to 100. See
+# Phase 3's cost note in SKILL.md before treating a full squad as the default.
+MAX_SQUAD = 100
+
+
+@dataclass
+class Pet:
+    role: str  # matches an ultracode Phase 2 role
+    names: list  # call signs this pet answers to; names[0] is the canonical one
+    art: str  # small ASCII face
+    color: str  # rich color name
+    system_prompt: str  # default role prompt, from references/agent-roles.md
+
+
+PETS = [
+    Pet(
+        role="architect",
+        names=["owl", "architect"],
+        art=" (o,o)\n (   )\n  \" \" ",
+        color="cyan",
+        system_prompt=(
+            "You are the architect. You do not implement — you decide interfaces and "
+            "hand them to implementers as a frozen contract. Produce the module/file "
+            "layout, the exact interface for each seam (signatures, types, data "
+            "shapes), and any cross-cutting conventions every implementer needs. Do "
+            "not write implementation code — your output is the contract, not the "
+            "building."
+        ),
+    ),
+    Pet(
+        role="implementer",
+        names=["ant", "ants", "implementer"],
+        art="  ..\n (oo)\no--||--o",
+        color="yellow",
+        system_prompt=(
+            "You are implementing one piece of a larger system. You do not need to "
+            "know about the rest of the system beyond what's given in this prompt — "
+            "it is self-contained. Build exactly the described piece, matching any "
+            "given interface exactly. If the interface doesn't actually work once "
+            "you're implementing against it, say so explicitly rather than silently "
+            "deviating from it."
+        ),
+    ),
+    Pet(
+        role="reviewer",
+        names=["hawk", "reviewer"],
+        art=" ^  ^\n(o..o)\n >\\/< ",
+        color="red",
+        system_prompt=(
+            "You are reviewing code you did not write, against a spec you did not "
+            "write it against. Your job is to find what's wrong, not to confirm it's "
+            "fine. Check for unhandled cases, places it silently assumes something "
+            "the spec didn't guarantee, deviations from any given interface, and "
+            "realistic bad input. List concrete issues, not a general impression."
+        ),
+    ),
+    Pet(
+        role="tester",
+        names=["hound", "tester"],
+        art="(o o)\n('Y')\n(   )",
+        color="green",
+        system_prompt=(
+            "You are writing tests from a specification, not from reading an "
+            "implementation. If given code to run tests against, the tests "
+            "themselves must still come from what the interface promises, not from "
+            "what the code happens to do. Cover documented behavior, documented edge "
+            "cases, and at least one case the spec doesn't explicitly mention. "
+            "Report pass/fail with actual failure output, not a vague summary."
+        ),
+    ),
+    Pet(
+        role="integrator",
+        names=["octopus", "integrator"],
+        art=" (o o)\n<(   )>\n /|||\\ ",
+        color="magenta",
+        system_prompt=(
+            "You are merging pieces into one working whole and checking the result "
+            "against the original spec. Report which parts satisfy the spec and "
+            "which don't. For anything that doesn't, say specifically what failed "
+            "and what needs to change — don't patch around a failure silently."
+        ),
+    ),
+]
+
+_BY_NAME = {name: pet for pet in PETS for name in pet.names}
+
+
+def find_pet(name: str) -> Pet:
+    pet = _BY_NAME.get(name.lower())
+    if pet is None:
+        known = ", ".join(sorted(_BY_NAME))
+        raise SystemExit(f"No pet called '{name}'. Known call signs: {known}")
+    return pet
+
+
+def _render(pet: Pet, total: int, done: int, elapsed: float, spinner: Spinner) -> Panel:
+    pct = int(100 * done / total) if total else 0
+    header = Text(f"  {pet.role.upper()}", style=f"bold {pet.color}")
+    face = Text(pet.art, style=pet.color)
+    spinner.update(text=Text(f"{done}/{total} back" if done else "working...", style=f"dim {pet.color}"))
+
+    table = Table.grid(padding=(0, 1))
+    table.add_row(Text("task ", style="dim"), ProgressBar(total=100, completed=pct, width=28), Text(f"{pct}%"))
+    table.add_row(Text("squad", style="dim"), ProgressBar(total=MAX_SQUAD, completed=total, width=28), Text(f"{total}/{MAX_SQUAD}"))
+
+    body = Group(header, face, spinner, table)
+    return Panel(body, title=f"[{elapsed:0.1f}s]", border_style=pet.color, expand=False)
+
+
+def summon(pet: Pet, tasks: list, model: str = DEFAULT_MODEL) -> dict:
+    """Dispatch `pet` once per entry in `tasks` (a squad, 1 to MAX_SQUAD strong),
+    animating a live HUD while the real calls are in flight. Returns {role: result}."""
+    if not (1 <= len(tasks) <= MAX_SQUAD):
+        raise SystemExit(f"Squad size must be 1-{MAX_SQUAD}, got {len(tasks)}")
+
+    specs = [
+        AgentSpec(role=f"{pet.role}[{i}]", system_prompt=pet.system_prompt, task_prompt=task, model=model)
+        for i, task in enumerate(tasks)
+    ]
+
+    client = Anthropic()
+    console = Console()
+    results = {}
+    spinner = Spinner("dots", style=pet.color)
+    start = time.time()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(specs)) as pool:
+        futures = {pool.submit(run_one, client, spec): spec for spec in specs}
+        with Live(_render(pet, len(specs), 0, 0, spinner), console=console, refresh_per_second=8) as live:
+            pending = set(futures)
+            while pending:
+                completed_now, pending = concurrent.futures.wait(
+                    pending, timeout=0.1, return_when=concurrent.futures.FIRST_COMPLETED
+                )
+                for fut in completed_now:
+                    result = fut.result()
+                    results[result["role"]] = result
+                live.update(_render(pet, len(specs), len(results), time.time() - start, spinner))
+
+    console.print()
+    return results
+
+
+def _print_roster() -> None:
+    console = Console()
+    for pet in PETS:
+        label = "/".join(pet.names)
+        console.print(Panel(Text(pet.art, style=pet.color),
+                             title=f"[bold {pet.color}]{label}[/] \u2014 {pet.role}",
+                             border_style=pet.color, expand=False))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Call an ultracode pet")
+    parser.add_argument("pet", help="call sign (owl, ants, hawk, hound, octopus...) or 'roster'")
+    parser.add_argument("tasks", nargs="*", help="one task string per squad member (1 pet = 1 task)")
+    parser.add_argument("--model", default=DEFAULT_MODEL)
+    args = parser.parse_args()
+
+    if args.pet == "roster":
+        _print_roster()
+        return
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("ANTHROPIC_API_KEY is not set. Export your own key first:")
+        print("  export ANTHROPIC_API_KEY=sk-ant-...")
+        sys.exit(1)
+
+    if not args.tasks:
+        print("Give at least one task. Example:")
+        print(f'  python pets.py {args.pet} "your task here"')
+        sys.exit(1)
+
+    pet = find_pet(args.pet)
+    results = summon(pet, args.tasks, model=args.model)
+
+    console = Console()
+    for role, result in results.items():
+        console.rule(f"[{pet.color}]{role}")
+        if result["ok"]:
+            console.print(result["output"])
+        else:
+            console.print(f"[red]FAILED:[/] {result['error']}")
+
+
+if __name__ == "__main__":
+    main()
+# Pets
+
+Full command reference for `scripts/pets.py` — the terminal HUD front end for calling ultracode
+agents by name. Read this before summoning a squad larger than a handful, or before customizing a
+pet's default prompt.
+
+## Roster
+
+| Pet | Call signs | Role | What it's for |
+|---|---|---|---|
+| 🦉 Owl | `owl`, `architect` | Architect | Freezes interfaces before anyone builds against them |
+| 🐜 Ants | `ant`, `ants`, `implementer` | Implementer | Builds one piece from a frozen interface |
+| 🦅 Hawk | `hawk`, `reviewer` | Reviewer | Adversarial review — didn't write the code, looking for what's wrong |
+| 🐕 Hound | `hound`, `tester` | Tester | Tests from the spec, not from the implementation |
+| 🐙 Octopus | `octopus`, `integrator` | Integrator | Merges everything, runs the Phase 4 gate |
+
+Run `python pets.py roster` to see all five rendered — no API key needed for that one command.
+
+## Basic use
+
+```
+python pets.py owl "design the interfaces for a rate limiter"
+```
+
+One call sign, one task, one real API dispatch. The HUD shows the pet, a spinner, and both bars
+sitting at 1/100 (a squad of one) while it's in flight, then prints the result.
+
+## Squads and the 100 cap
+
+Any pet can be summoned as a squad — one task string per member, space-separated (quote each one):
+
+```
+python pets.py ants "implement velocity_field" "implement step" "implement the CLI wrapper"
+```
+
+This dispatches three implementers in real parallel, one per task, all sharing the ants HUD. The
+squad bar reads `3/100`. The cap is 100 per summon — a safety and cost bound, not a target. It
+exists so a mistake (or a task that decomposes further than expected) can't silently fan out into
+an unbounded API bill. In practice:
+
+- A handful of genuinely independent subtasks (2-10) is the common case — most Phase 1 waves
+  don't decompose further than that.
+- Reaching for something close to 100 should be rare and deliberate — that's a lot of API spend in
+  one summon on most models. If a task seems to want that many pieces, it's worth re-checking
+  Phase 1: is this actually dozens of independent subtasks, or one subtask you could describe as a
+  loop over many inputs and hand to a single implementer instead?
+- The cap is per pet, per summon — not a global ceiling across a whole ultracode run. Five waves of
+  ten ants each is fifty real dispatches total across the run, not one summon of fifty.
+
+## Both bars are real
+
+Neither bar is a timer or an animation for its own sake:
+
+- **Task bar** — completed dispatches over total dispatches in this summon, updated the instant a
+  result comes back, not on a fixed interval.
+- **Squad bar** — total dispatches in this summon over 100, fixed once the summon starts (the
+  squad size was already chosen by how many task strings got passed in).
+
+If a dispatch fails (bad key, rate limit, network error), it still counts as "back" for the task
+bar — the HUD doesn't distinguish success from failure in the bars themselves, only in the final
+printed output per role. Check the printed `FAILED:` lines (or `result["ok"]` if calling `summon()`
+directly) for actual outcomes, not the bars.
+
+## Customizing a pet's prompt
+
+Each `Pet` in `pets.py` carries a default `system_prompt` matching its role template in
+`agent-roles.md`. For a specific run, either:
+
+- Edit the task string passed on the command line to include anything role-specific (interfaces to
+  satisfy, the Phase 0 spec, constraints) — this is the normal path and needs no code changes.
+- Edit the `Pet.system_prompt` in `pets.py` directly to permanently change how a role behaves for
+  every future summon (for example, always writing tests in one specific framework).
+
+## Adding a new pet
+
+Append a `Pet(...)` entry to the `PETS` list in `pets.py`: a role name, one or more call signs, a
+small ASCII `art` string, a `color`, and a `system_prompt`. No other wiring needed — `find_pet()`
+and the roster command both read off the same list.
+---
+name: ultracode
+description: Use this skill whenever the user says ultracode, asks for maximum-effort or maximum-efficiency coding work, wants a task divided across coordinated agents, or is working on high-stakes code where correctness matters more than speed — research code, a competition entry, a production release, anything shipped only once. Also trigger on phrases like divide this into agents, make this bulletproof, or summon a pet by name (owl, ants, hawk, hound, octopus), and on any request large enough that one linear pass would likely miss edge cases. Provides the full pipeline — decompose into a dependency graph with frozen interfaces, assign agent roles (architect, implementers, adversarial reviewer, tester, integrator) each with its own pet and terminal HUD, dispatch them in real parallel or fall back to sequential simulation, then run mandatory verification gates before calling anything done. Don't just write the code directly for large or critical requests — run this pipeline first.
+---
+
+# Ultracode
+
+Ultracode is maximum-effort mode for coding work: instead of writing a task start to finish in
+one linear pass, break it into a dependency graph, hand each independent piece to a specialized
+agent role, run the parallel-safe pieces concurrently, and pass everything through adversarial
+review and independent testing before it ships. Use it when the task is large enough to actually
+decompose and the cost of being wrong is high enough to justify the overhead — not as the default
+way to write every function.
+
+**Why this works, briefly:** a single agent that writes code, reviews its own code, and tests its
+own code shares one set of blind spots across all three jobs — whatever it didn't think of while
+writing, it won't think of while reviewing either. Splitting those jobs across separate passes (or
+separate agents, when the runtime actually supports parallel dispatch) forces a fresh, narrower
+context onto each one — the same reason isolated subagent context windows exist in the first
+place: a reviewer that never saw the reasoning behind a design decision reviews the *code*, not
+the intent behind it, and catches things self-review skips.
+
+**Why it isn't free:** decomposition and cross-checking cost real time and tokens — coordinating
+several focused passes typically costs several times what one direct pass would, in exchange for
+higher reliability. That trade is worth making when the output is genuinely high-stakes. It is not
+worth making for a quick script or a one-line fix — for those, just write the code.
+
+## Should this task get the full pipeline?
+
+Run the phases below when **both** are true:
+
+- The task actually decomposes — there are two or more pieces with a real interface between them,
+  not one continuous piece of reasoning being split up for the sake of it.
+- The stakes justify the overhead — research code, a competition or publication submission, a
+  production release, or anything else you only get to ship once and want to get right.
+
+If the user explicitly asked for ultracode or max effort, run the pipeline even for a task you'd
+otherwise judge too small — that's an explicit request for thoroughness over speed. Otherwise, for
+one function or one clear fix, skip straight to writing it. Forcing a decomposition onto a task
+with no real seam just adds coordination overhead with nothing to show for it.
+
+## Phase 0 — Lock the target
+
+Before splitting anything, write down, explicitly:
+
+- **Definition of done** — what "correct" means for this specific task, in terms someone could
+  check against later without asking what you meant.
+- **Constraints** — language/framework already in use, libraries that are and aren't allowed,
+  performance or compatibility requirements.
+- **Out of scope** — what you're deliberately not doing, so no agent invents extra work.
+
+If the user hasn't specified some of this, state your best interpretation and proceed rather than
+stalling on it — but write the interpretation down. It becomes the contract every role below is
+checked against in Phase 4, and an unstated assumption here is the single biggest reason
+multi-agent output ends up inconsistent: agents that don't share a context can't infer a spec you
+never wrote down, they can only guess at it, and they won't all guess the same way.
+
+## Phase 1 — Decompose into a dependency graph
+
+Break the task into subtasks. For each one, pin down:
+
+- **What it owns** — the specific files, modules, or functions it's responsible for.
+- **Its interface** — the exact inputs/outputs it exposes to every other subtask: function
+  signatures, types, data schemas, whatever the boundary actually is. Decide this now, before any
+  implementation starts.
+- **Its dependencies** — which other subtasks, if any, must land first.
+
+Freezing the interface before implementation is the part that actually matters. A subagent's
+context starts empty — the only thing that crosses into it is whatever you explicitly hand it in
+its task prompt, nothing implicit, nothing assumed shared. If two pieces of work each guess at the
+shape of the boundary between them instead of being handed a frozen one, they'll guess
+differently, and "integration" turns into a rewrite instead of a merge. This is the most common
+way this whole approach fails — spend real time here.
+
+Once every subtask has an owner, an interface, and its dependencies listed, group them into waves:
+
+```
+Wave 1: [subtasks with no dependencies — these can run in parallel]
+Wave 2: [subtasks that only depend on Wave 1 — parallel once Wave 1 lands]
+...
+```
+
+See `references/decomposition-patterns.md` for common shapes this takes (layered systems,
+independent parallel modules, pipelines, model+validation splits) and the failure modes to watch
+for — worth a read before decomposing anything non-trivial.
+
+## Phase 2 — Assign agent roles
+
+A default role set that covers most tasks. Use all of them, drop what doesn't apply, or add more:
+
+- **Architect** — runs first, alone. Owns the interfaces and overall design from Phase 1. Its
+  output (the frozen contracts) is handed verbatim to every other role.
+- **Implementer** (one per parallel-safe subtask) — gets *only* its own subtask spec plus the
+  frozen interfaces it touches, not the whole codebase. A narrower context keeps it focused and
+  mirrors why isolated subagents outperform one agent holding everything at once.
+- **Reviewer** — adversarial review of every implementer's output against the Phase 0 spec.
+  Actively hunting for what's wrong, not confirming it's fine. Must not be the same pass that
+  wrote the code — self-review inherits the author's blind spots by construction.
+- **Tester** — writes and runs tests derived from the spec and the interface, not from reading the
+  implementation. A test written by reading the code just re-derives the code's own bugs as
+  expected behavior; it has to check the requirement, not the artifact.
+- **Integrator** — merges everything in dependency order, resolves any interface drift between
+  pieces, runs the whole thing end to end.
+
+Give each role a tight, self-contained prompt: what it owns, exactly what it's handed (paste in
+the actual interfaces/spec — don't reference "the plan" and assume it's visible), and what "done"
+looks like for that role specifically. Full prompt templates and a complete worked example are in
+`references/agent-roles.md`.
+
+## Phase 3 — Execute
+
+**(a) Real parallel dispatch.** If the runtime can actually spawn concurrent agents (a
+subagent/task-style tool, or direct API access), launch every subtask in a wave together, not
+staggered one after another — the wall-clock win only exists if they're actually running at the
+same time. `scripts/orchestrator.py` is a runnable reference implementation: it dispatches a list
+of role prompts to the Claude API concurrently using your own API key and collects the results
+keyed by role. `scripts/pets.py` is a friendlier front end to the same dispatch — see "Pets" below.
+Adapt either into however the target system actually spawns agents — the important part is the
+shape (self-contained prompt in, labeled result out), not the exact script.
+
+**(b) Sequential simulation.** If there's no real concurrent execution available, work through the
+roles one at a time in the same session, explicitly switching persona for each ("switching to
+reviewer — did not write this code, looking for what's wrong with it"). This is strictly weaker
+than real isolation, since the same context already knows what it wrote going in and self-review
+is generously biased toward assuming its own reasoning was right — but it still catches more than
+skipping the step entirely. Treat it as a floor for when (a) isn't available, not a substitute for
+(a) when it is.
+
+## Phase 4 — Integrate and gate
+
+Merge in dependency order. Before calling anything done, check it against the Phase 0 definition
+explicitly — not "does this look plausible" but "does it satisfy every constraint that was written
+down." For anything that earned the full pipeline in the first place, this checklist is not
+optional:
+
+- [ ] Every interface from Phase 1 is actually satisfied on both sides of the boundary
+- [ ] Tests pass, and were written from the spec (Phase 2's Tester), not from the implementation
+- [ ] Edge cases and error paths are covered, not just the happy path
+- [ ] Anything touching input handling, auth, or external calls got a security-focused pass
+- [ ] The result matches Phase 0's definition of done, not a reinterpretation that crept in
+
+If something fails a gate, send it back to the role that owns it with the specific failure — don't
+quietly patch it in the integration step. A patch made outside the role structure defeats the
+reason specialized review existed in the first place, and it's exactly the kind of fix that looks
+small in the moment and turns out to violate an interface another piece depends on.
+
+## Pets
+
+Each role above has a pet — a call sign to summon it by instead of writing out a full role prompt
+every time:
+
+| Pet | Call sign | Role |
+|---|---|---|
+| 🦉 | `owl` | architect |
+| 🐜 | `ants` | implementer |
+| 🦅 | `hawk` | reviewer |
+| 🐕 | `hound` | tester |
+| 🐙 | `octopus` | integrator |
+
+`python scripts/pets.py <call-sign> "<task>" ["<task>" ...]` summons that pet — one task per squad
+member, 1 to 100 at once (see "Squads and the 100 cap" in `references/pets.md`). While the dispatch
+is in flight it draws a live terminal panel: the pet, a spinner, and two bars — task progress (how
+many of this summon's dispatches have come back) and squad size (how many of this pet's 100-cap
+are deployed right now). Both bars are real, read off actual completed dispatches, not a simulated
+timer — consistent with the rest of ultracode, nothing here is faked for show. Run
+`python scripts/pets.py roster` to see every pet without spending an API call.
+
+This sits on top of Phase 3(a), not apart from it — one pet summon is exactly one `AgentSpec` per
+squad member, dispatched through the same `run_one()` that `orchestrator.py` already uses. See
+`references/pets.md` for the full command reference and squad-sizing guidance.
+
+## Reference files
+
+- `references/agent-roles.md` — full prompt templates for each role, plus a complete worked
+  example (a small simulation task decomposed end to end).
+- `references/decomposition-patterns.md` — common decomposition shapes by task type, and the
+  specific failure modes that show up when this approach goes wrong.
+- `references/pets.md` — full pet roster, command reference, and squad-sizing guidance for the
+  100 cap.
+- `scripts/orchestrator.py` — runnable parallel-dispatch reference implementation. Needs
+  `pip install anthropic` and your own `ANTHROPIC_API_KEY`; run `python orchestrator.py --demo`
+  to sanity-check the harness before wiring it into anything real.
+- `scripts/pets.py` — the pet HUD front end to `orchestrator.py`. Needs `pip install rich` in
+  addition to `anthropic`. Run `python pets.py roster` to preview it with no API key needed.
+
+## Output format
+
+For a full ultracode run, give the user:
+
+- The Phase 0 definition of done, stated plainly, so a misread spec is caught immediately
+- The wave plan from Phase 1 — what ran in parallel, what was sequential, and why
+- The actual code/deliverable
+- The Phase 4 gate checklist, filled in — not just "tests pass" but which tests, against what
+- Anything that failed a gate and got sent back, and what changed as a result
+
+Keep this proportional: a task that triggered the full pipeline deserves the full trail above; if
+the task wasn't worth decomposing (see "Should this task get the full pipeline?"), say so briefly
+and hand back the direct result.
+#!/usr/bin/env python3
+"""
+Ultracode orchestrator — reference implementation for real parallel agent dispatch.
+
+Dispatches a list of independent agent roles to the Claude API concurrently, each with its
+own system prompt, task prompt, and (optionally) its own model. Collects results keyed by
+role. This is the "Phase 3(a): real parallel dispatch" mechanism referenced in SKILL.md —
+lift run_agents() / AgentSpec into however your own runtime actually spawns and tracks
+agents; the important part is the shape (self-contained prompt in, labeled result out), not
+this exact script.
+
+Requires:
+    pip install anthropic --break-system-packages
+    ANTHROPIC_API_KEY set in your environment (your own key — this is a standalone script,
+    not the claude.ai artifact proxy, so it needs real credentials).
+
+Usage:
+    python orchestrator.py --demo
+    (or import AgentSpec / run_agents into your own code)
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import time
+import argparse
+import concurrent.futures
+from dataclasses import dataclass
+from typing import Optional
+
+try:
+    from anthropic import Anthropic
+except ImportError:
+    print("Missing dependency. Run: pip install anthropic --break-system-packages")
+    sys.exit(1)
+
+# Solid default for implementer/tester roles. Reach for a stronger model on the
+# architect/reviewer roles on genuinely hard tasks — see STRONG_MODEL below and the
+# per-agent `model` field on AgentSpec.
+DEFAULT_MODEL = "claude-sonnet-5"
+STRONG_MODEL = "claude-opus-4-8"
+MAX_TOKENS = 4096
+
+
+@dataclass
+class AgentSpec:
+    """One role in an ultracode wave. Everything the agent needs must be IN this spec —
+    it gets nothing else: no shared history, no other agents' output, unless you paste
+    that in yourself. See references/agent-roles.md for what each role's prompt should
+    actually contain."""
+
+    role: str  # e.g. "architect", "implementer:auth", "reviewer"
+    system_prompt: str  # what this agent is and what it owns
+    task_prompt: str  # the full, self-contained task
+    model: str = DEFAULT_MODEL
+    max_tokens: int = MAX_TOKENS
+
+
+def run_one(client: Anthropic, spec: AgentSpec) -> dict:
+    start = time.time()
+    try:
+        response = client.messages.create(
+            model=spec.model,
+            max_tokens=spec.max_tokens,
+            system=spec.system_prompt,
+            messages=[{"role": "user", "content": spec.task_prompt}],
+        )
+        text = "".join(block.text for block in response.content if block.type == "text")
+        return {
+            "role": spec.role,
+            "ok": True,
+            "output": text,
+            "seconds": round(time.time() - start, 1),
+            "input_tokens": response.usage.input_tokens,
+            "output_tokens": response.usage.output_tokens,
+        }
+    except Exception as e:
+        return {
+            "role": spec.role,
+            "ok": False,
+            "output": None,
+            "error": str(e),
+            "seconds": round(time.time() - start, 1),
+        }
+
+
+def run_agents(specs: list[AgentSpec], max_workers: Optional[int] = None) -> dict[str, dict]:
+    """Dispatch every spec concurrently. Returns {role: result_dict}.
+
+    A failed agent doesn't stop the others — check result["ok"] before using result["output"].
+    """
+    client = Anthropic()  # picks up ANTHROPIC_API_KEY from the environment
+    results: dict[str, dict] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers or len(specs)) as pool:
+        futures = {pool.submit(run_one, client, spec): spec for spec in specs}
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            results[result["role"]] = result
+    return results
+
+
+def _demo() -> None:
+    """Sanity-check the harness: three independent roles dispatched in parallel on a toy task.
+    This proves the plumbing works (parallel dispatch, error handling, result collection) —
+    it isn't a full ultracode run. For a real run, build specs from Phase 0-2 of SKILL.md."""
+    specs = [
+        AgentSpec(
+            role="architect",
+            system_prompt="You are the architect. You design interfaces, you don't implement.",
+            task_prompt=(
+                "Design the function signature (name, params, return type, and a one-line "
+                "docstring only — no implementation) for a rate limiter with a token-bucket "
+                "algorithm in Python. Output just the signature and docstring."
+            ),
+        ),
+        AgentSpec(
+            role="implementer",
+            system_prompt="You are an implementer. You write clean, minimal, correct code.",
+            task_prompt="Write a Python token-bucket rate limiter class: refill() and allow(n=1) -> bool.",
+        ),
+        AgentSpec(
+            role="reviewer",
+            system_prompt=(
+                "You are an adversarial reviewer. You did not write this code. Find what's "
+                "wrong with it: thread safety, edge cases, off-by-one errors. Be specific."
+            ),
+            task_prompt=(
+                "Review this token-bucket rate limiter for correctness under concurrent access:\n\n"
+                "class RateLimiter:\n"
+                "    def __init__(self, rate, capacity):\n"
+                "        self.tokens = capacity\n"
+                "        self.rate = rate\n"
+                "    def allow(self):\n"
+                "        if self.tokens > 0:\n"
+                "            self.tokens -= 1\n"
+                "            return True\n"
+                "        return False\n"
+            ),
+        ),
+    ]
+
+    print(f"Dispatching {len(specs)} agents in parallel...\n")
+    results = run_agents(specs)
+    for role, result in results.items():
+        print(f"--- {role} ({result['seconds']}s) ---")
+        if result["ok"]:
+            print(result["output"])
+        else:
+            print(f"FAILED: {result['error']}")
+        print()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Ultracode parallel agent orchestrator")
+    parser.add_argument("--demo", action="store_true", help="Run a 3-agent sanity check")
+    args = parser.parse_args()
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("ANTHROPIC_API_KEY is not set. Export your own key first:")
+        print("  export ANTHROPIC_API_KEY=sk-ant-...")
+        sys.exit(1)
+
+    if args.demo:
+        _demo()
+    else:
+        print("No task given. Run with --demo to sanity-check the harness, or import")
+        print("AgentSpec / run_agents into your own code to wire up real ultracode phases.")
+
+
+if __name__ == "__main__":
+    main()
+# Agent Role Templates
+
+Prompt templates for each ultracode role, plus one complete worked example. Read this when
+assigning roles for anything beyond a trivial two-piece split.
+
+## Architect
+
+```
+You are the architect for [task name]. You do not implement — you decide interfaces and hand
+them to implementers as a frozen contract.
+
+Task: [full Phase 0 definition of done, constraints, and out-of-scope, pasted in full]
+
+Produce:
+1. The module/file layout — what exists, one line each on what it's responsible for
+2. The exact interface for each seam between modules — function signatures, types, data
+   shapes. This is what implementers receive verbatim; be as precise as an API spec someone
+   else has to build against without asking you questions.
+3. Anything cross-cutting that every implementer needs to know (error-handling convention,
+   naming convention, a shared data type used everywhere)
+
+Do not write implementation code. Your output is the contract, not the building.
+```
+
+## Implementer
+
+```
+You are implementing [specific subtask] as part of a larger system. You do not need to know
+about the rest of the system beyond what's given here — this prompt is self-contained.
+
+Your subtask: [the specific piece, from the architect's module breakdown]
+Interfaces you must satisfy: [paste the relevant frozen interfaces verbatim — every signature
+this piece exposes to others, and every signature of anything else it calls into]
+Constraints: [from Phase 0]
+
+Build exactly this piece, matching the interface exactly. If the interface doesn't actually
+work once you're implementing against it, flag the specific mismatch rather than silently
+deviating from it — a silent deviation is what breaks the integration step.
+```
+
+## Reviewer
+
+```
+You are reviewing code you did not write, against a spec you did not write it against. Your
+job is to find what's wrong, not to confirm it's fine.
+
+Spec this was supposed to satisfy: [Phase 0 definition of done + the relevant interface]
+Code to review: [paste the actual code]
+
+Check specifically for: cases the code doesn't handle, places it silently assumes something
+the spec didn't guarantee, deviations from the frozen interface, and anything that would break
+under realistic bad input rather than the input a demo would use. List concrete issues, not a
+general impression. If you find nothing, say specifically what you checked and why it holds,
+rather than just "looks good."
+```
+
+## Tester
+
+```
+You are writing tests for [subtask] from its specification — not from reading the
+implementation. You may be given the implementation to run tests against, but the tests
+themselves should come from what the interface promises, not from what the code happens to do.
+
+Specification: [interface + Phase 0 definition of done]
+[If applicable: known correct answers to check against — analytic solutions, reference
+outputs, boundary values with a known right answer independent of this implementation]
+
+Write tests covering: the documented behavior, the documented edge cases, and at least one
+case the spec doesn't explicitly mention but a reasonable caller would hit. Run them against
+the implementation and report pass/fail with the actual failure output for anything that fails
+— not just "3/5 passed."
+```
+
+## Integrator
+
+```
+You are merging [list of pieces] into one working whole and checking the result against the
+original spec.
+
+Pieces to merge: [paste each, or point to file paths]
+Original definition of done: [Phase 0, verbatim]
+Interfaces that must now actually connect: [Phase 1 contracts]
+
+Merge them, run the whole thing end to
+<truncated 7459 bytes>
+
+NOTE: The output was truncated because it was too long. Use a more targeted query or a smaller range to get the information you need.
